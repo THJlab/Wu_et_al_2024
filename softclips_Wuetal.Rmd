@@ -1,0 +1,404 @@
+---
+title: "Softclips"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(magrittr)
+```
+
+# Load Data
+
+## total nr of softclips (genomic + spike)
+from genome.au.dk
+```{r}
+fnames <- dir('softclip_counts', full.names=T)
+
+fname <- fnames[1]
+```
+
+
+```{r}
+(df <- lapply(fnames, function(fname)
+read_tsv(fname, col_names=c('softclip', 'cnt'), show_col_types=FALSE) %>%
+  mutate(sample = sub('.*\\/', '', fname) %>% sub('_merged.*', '', .))) %>%
+  bind_rows)
+```
+
+## spike reads nr of softclips (genomic + spike)
+from genome.au.dk
+```{r}
+fnames <- dir('spike_softclip_counts/', full.names=T)
+
+fname <- fnames[1]
+```
+
+
+```{r}
+(df_spikes <- lapply(fnames, function(fname)
+read_tsv(fname, col_names=c('softclip', 'spike_softclip_cnt'), show_col_types=FALSE) %>%
+  mutate(sample = sub('.*\\/', '', fname) %>% sub('_merged.*', '', .))) %>%
+  bind_rows)
+```
+
+
+# Tn3 abundance in various KDs
+
+```{r}
+(reads_per_sample <- df %>%
+  group_by(sample) %>%
+  summarize(total_reads = sum(cnt)) %>%
+  mutate(sample = sub('_Aligned.*', '', sample)))
+```
+
+```{r}
+(spike_reads_per_sample <- df_spikes %>%
+  group_by(sample) %>%
+  summarize(total_spike_reads = sum(spike_softclip_cnt)) %>%
+  mutate(sample = sub('spike.*', '', sample)))
+```
+
+```{r}
+unique(reads_per_sample$sample)
+```
+
+```{r}
+total_Tn <- df %>% filter(grepl('^T*$', softclip) & nchar(softclip) >= 3, grepl('_Aligned.sortedByCoord.out_softclips.counts', sample),
+                      !grepl('Novxrep2_siGFP', sample),
+                      !grepl('Novxrep3_siGFP', sample)) %>%
+  group_by(sample) %>%
+  summarize(Tn_cnts = sum(cnt)) %>%
+  mutate(sample = sub('_Aligned.*', '', sample)) %>%
+  left_join(reads_per_sample) 
+
+spike_Tn <- df_spikes %>% 
+  filter(grepl('^T*$', softclip) & 
+           nchar(softclip) >= 3, 
+         grepl('spike_softclips.counts', sample),
+         !grepl('Novxrep2_siGFP', sample),
+         !grepl('Novxrep3_siGFP', sample)) %>%
+  group_by(sample) %>%
+  summarize(spike_Tn_cnts = sum(spike_softclip_cnt)) %>%
+  mutate(sample = sub('spike.*', '', sample)) %>%
+  left_join(spike_reads_per_sample)
+
+df_Tn <- total_Tn %>%
+  left_join(spike_Tn) %>%
+  mutate(freq_genomic_Tn = (Tn_cnts-spike_Tn_cnts)/(total_reads-total_spike_reads)) %>%
+  tidyr::separate(sample, c('series', 'KD', 'PAP', 'fraction')) %>%
+  mutate(series = case_when(series == 'July' ~ 'batch1',
+                         series == 'Sept' ~ 'batch2',
+                         series == 'Novxrep1' ~ 'batch3',
+                         series == 'Novxrep2' ~ 'batch4',
+                         series == 'Novxrep3' ~ 'batch5')) %>%
+  mutate(condi=paste(series,KD,PAP,fraction,sep='_')) %>%
+  filter(condi !='batch5_siGFP_noPAP_in', condi !='batch5_siGFP_xPAP_in', condi !='batch4_siGFP_xPAP_in')
+```
+
+
+
+```{r}
+(p <- df_Tn %>%
+  filter(KD != 'siRBM7', KD != 'siZCCHC8xsiZFC3H1') %>%
+ggplot(.,
+       aes(x=KD,
+           y=freq_genomic_Tn)) +
+  geom_boxplot(fill=NA, outlier.shape = NA) +
+  geom_jitter(aes(color=KD,
+           shape=series), size=3, width = .2) +
+  facet_grid(.~PAP+fraction, space='free_x') +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1)))
+
+pdf('Plots/Wuetal_genomic_Tn_frequency.pdf',width=6, height=6*0.618)
+p
+dev.off()
+```
+
+
+# cumulative vs length
+
+```{r}
+total_Tn_vs_len <- df %>% 
+  filter(grepl('^T*$', softclip), 
+         grepl('_Aligned.sortedByCoord.out_softclips.counts', sample)) %>%
+  mutate(sample = sub('_Aligned.*', '', sample)) %>%
+  left_join(reads_per_sample)
+
+spike_Tn_vs_len <- df_spikes %>% 
+  filter(grepl('^T*$', softclip), 
+         grepl('spike', sample)) %>%
+  mutate(sample = sub('spike.*', '', sample)) %>%
+  left_join(spike_reads_per_sample)
+
+df_Tn_vs_len <- total_Tn_vs_len %>% 
+  left_join(spike_Tn_vs_len) %>%
+  mutate(spike_softclip_cnt = ifelse(is.na(spike_softclip_cnt), 0, spike_softclip_cnt),
+         total_spike_reads = ifelse(is.na(total_spike_reads), 0, total_spike_reads),
+         genomic_freq_Tn = (cnt-spike_softclip_cnt)/(total_reads-total_spike_reads),
+         spike_freq_Tn = spike_softclip_cnt/total_spike_reads,
+         spike_freq_Tn = ifelse(is.na(spike_freq_Tn), 1E-7, spike_freq_Tn),
+         tail_len = nchar(softclip)) %>%
+  tidyr::separate(sample, c('series', 'KD', 'PAP', 'fraction')) %>%
+  mutate(series = case_when(series == 'July' ~ 'batch1',
+                         series == 'Sept' ~ 'batch2',
+                         series == 'Novxrep1' ~ 'batch3',
+                         series == 'Novxrep2' ~ 'batch4',
+                         series == 'Novxrep3' ~ 'batch5'))
+
+#doing the same for mixed tails (here mixed being any kind of tail with at least one A but not pure A)
+
+total_mixed_vs_len <- df %>% 
+  filter(grepl('A', softclip),
+         !grepl('^A*$', softclip), 
+         grepl('_Aligned.sortedByCoord.out_softclips.counts', sample)) %>%
+  mutate(sample = sub('_Aligned.*', '', sample)) %>%
+  left_join(reads_per_sample)
+
+spike_mixed_vs_len <- df_spikes %>% 
+  filter(grepl('A', softclip),
+         !grepl('^A*$', softclip),
+         grepl('spike', sample)) %>%
+  mutate(sample = sub('spike.*', '', sample)) %>%
+  left_join(spike_reads_per_sample)
+
+df_mixed_vs_len <- total_mixed_vs_len %>% 
+  left_join(spike_mixed_vs_len) %>%
+  mutate(spike_softclip_cnt = ifelse(is.na(spike_softclip_cnt), 0, spike_softclip_cnt),
+         total_spike_reads = ifelse(is.na(total_spike_reads), 0, total_spike_reads),
+         genomic_freq_mixed = (cnt-spike_softclip_cnt)/(total_reads-total_spike_reads),
+         spike_freq_mixed = spike_softclip_cnt/total_spike_reads,
+         spike_freq_mixed = ifelse(is.na(spike_freq_mixed), 1E-7, spike_freq_mixed),
+         tail_len = nchar(softclip)) %>%
+  tidyr::separate(sample, c('series', 'KD', 'PAP', 'fraction')) %>%
+  mutate(series = case_when(series == 'July' ~ 'batch1',
+                         series == 'Sept' ~ 'batch2',
+                         series == 'Novxrep1' ~ 'batch3',
+                         series == 'Novxrep2' ~ 'batch4',
+                         series == 'Novxrep3' ~ 'batch5'))
+
+
+
+#doing the same for AnG tails
+
+total_AnG_vs_len <- df %>% 
+  filter(grepl('^A{1,100}G$', softclip), 
+         grepl('_Aligned.sortedByCoord.out_softclips.counts', sample)) %>%
+  mutate(sample = sub('_Aligned.*', '', sample)) %>%
+  left_join(reads_per_sample)
+
+spike_AnG_vs_len <- df_spikes %>% 
+  filter(grepl('^A{1,100}G$', softclip), 
+         grepl('spike', sample)) %>%
+  mutate(sample = sub('spike.*', '', sample)) %>%
+  left_join(spike_reads_per_sample)
+
+df_AnG_vs_len <- total_AnG_vs_len %>% 
+  left_join(spike_AnG_vs_len) %>%
+  mutate(spike_softclip_cnt = ifelse(is.na(spike_softclip_cnt), 0, spike_softclip_cnt),
+         total_spike_reads = ifelse(is.na(total_spike_reads), 0, total_spike_reads),
+         genomic_freq_AnG = (cnt-spike_softclip_cnt)/(total_reads-total_spike_reads),
+         spike_freq_AnG = spike_softclip_cnt/total_spike_reads,
+         spike_freq_AnG = ifelse(is.na(spike_freq_AnG), 1E-7, spike_freq_AnG),
+         tail_len = nchar(softclip)) %>%
+  tidyr::separate(sample, c('series', 'KD', 'PAP', 'fraction')) %>%
+  mutate(series = case_when(series == 'July' ~ 'batch1',
+                         series == 'Sept' ~ 'batch2',
+                         series == 'Novxrep1' ~ 'batch3',
+                         series == 'Novxrep2' ~ 'batch4',
+                         series == 'Novxrep3' ~ 'batch5'))
+
+
+#doing the same for AnC tails
+
+total_AnC_vs_len <- df %>% 
+  filter(grepl('^A{1,100}C$', softclip), 
+         grepl('_Aligned.sortedByCoord.out_softclips.counts', sample)) %>%
+  mutate(sample = sub('_Aligned.*', '', sample)) %>%
+  left_join(reads_per_sample)
+
+spike_AnC_vs_len <- df_spikes %>% 
+  filter(grepl('^A{1,100}G$', softclip), 
+         grepl('spike', sample)) %>%
+  mutate(sample = sub('spike.*', '', sample)) %>%
+  left_join(spike_reads_per_sample)
+
+df_AnC_vs_len <- total_AnC_vs_len %>% 
+  left_join(spike_AnC_vs_len) %>%
+  mutate(spike_softclip_cnt = ifelse(is.na(spike_softclip_cnt), 0, spike_softclip_cnt),
+         total_spike_reads = ifelse(is.na(total_spike_reads), 0, total_spike_reads),
+         genomic_freq_AnC = (cnt-spike_softclip_cnt)/(total_reads-total_spike_reads),
+         spike_freq_AnC = spike_softclip_cnt/total_spike_reads,
+         spike_freq_AnC = ifelse(is.na(spike_freq_AnC), 1E-7, spike_freq_AnC),
+         tail_len = nchar(softclip)) %>%
+  tidyr::separate(sample, c('series', 'KD', 'PAP', 'fraction')) %>%
+  mutate(series = case_when(series == 'July' ~ 'batch1',
+                         series == 'Sept' ~ 'batch2',
+                         series == 'Novxrep1' ~ 'batch3',
+                         series == 'Novxrep2' ~ 'batch4',
+                         series == 'Novxrep3' ~ 'batch5'))
+
+
+#doing the same for AnT tails
+
+total_AnT_vs_len <- df %>% 
+  filter(grepl('^A{1,100}T$', softclip), 
+         grepl('_Aligned.sortedByCoord.out_softclips.counts', sample)) %>%
+  mutate(sample = sub('_Aligned.*', '', sample)) %>%
+  left_join(reads_per_sample)
+
+spike_AnT_vs_len <- df_spikes %>% 
+  filter(grepl('^A{1,100}G$', softclip), 
+         grepl('spike', sample)) %>%
+  mutate(sample = sub('spike.*', '', sample)) %>%
+  left_join(spike_reads_per_sample)
+
+df_AnT_vs_len <- total_AnT_vs_len %>% 
+  left_join(spike_AnT_vs_len) %>%
+  mutate(spike_softclip_cnt = ifelse(is.na(spike_softclip_cnt), 0, spike_softclip_cnt),
+         total_spike_reads = ifelse(is.na(total_spike_reads), 0, total_spike_reads),
+         genomic_freq_AnT = (cnt-spike_softclip_cnt)/(total_reads-total_spike_reads),
+         spike_freq_AnT = spike_softclip_cnt/total_spike_reads,
+         spike_freq_AnT = ifelse(is.na(spike_freq_AnT), 1E-7, spike_freq_AnT),
+         tail_len = nchar(softclip)) %>%
+  tidyr::separate(sample, c('series', 'KD', 'PAP', 'fraction')) %>%
+  mutate(series = case_when(series == 'July' ~ 'batch1',
+                         series == 'Sept' ~ 'batch2',
+                         series == 'Novxrep1' ~ 'batch3',
+                         series == 'Novxrep2' ~ 'batch4',
+                         series == 'Novxrep3' ~ 'batch5'))
+```
+
+```{r}
+df_Tn_vs_len %>%
+  distinct(KD, fraction, PAP, series) %>%
+  filter(KD == 'siZFC3H1')
+```
+
+```{r}
+
+df_Tn_vs_len2=df_Tn_vs_len
+df_Tn_vs_len2$pop=c('Tn')
+df_AnC_vs_len2=df_AnC_vs_len
+df_AnC_vs_len2$pop=c('AnC')
+df_AnG_vs_len2=df_AnG_vs_len
+df_AnG_vs_len2$pop=c('AnG')
+df_AnT_vs_len2=df_AnT_vs_len
+df_AnT_vs_len2$pop=c('AnT')
+
+names(df_Tn_vs_len2)=c("softclip","cnt","series","KD","PAP","fraction","total_reads","spike_softclip_cnt","total_spike_reads","genomic_freq","spike_freq","tail_len","pop")
+names(df_AnC_vs_len2)=c("softclip","cnt","series","KD","PAP","fraction","total_reads","spike_softclip_cnt","total_spike_reads","genomic_freq","spike_freq","tail_len","pop")
+names(df_AnG_vs_len2)=c("softclip","cnt","series","KD","PAP","fraction","total_reads","spike_softclip_cnt","total_spike_reads","genomic_freq","spike_freq","tail_len","pop")
+names(df_AnT_vs_len2)=c("softclip","cnt","series","KD","PAP","fraction","total_reads","spike_softclip_cnt","total_spike_reads","genomic_freq","spike_freq","tail_len","pop")
+
+tmp=rbind(df_Tn_vs_len2,df_AnC_vs_len2)
+tmp=rbind(tmp,df_AnG_vs_len2)
+intermediary=rbind(tmp,df_AnT_vs_len2) %>%
+  filter(KD != 'siRBM7', KD != 'siZCCHC8xsiZFC3H1', series != 'batch2', series != 'batch5', PAP != 'noPAP', pop == 'Tn')
+
+
+plotable = intermediary %>%
+  mutate(tail_len = as.integer(tail_len)) %>%
+  group_by(tail_len) %>%
+  summarise(genomic_freq_mean=mean(genomic_freq),
+            spike_freq_mean=mean(spike_freq),
+            genomic_freq_sd = sd(genomic_freq, na.rm=TRUE),
+            spike_freq_sd = sd(spike_freq, na.rm=TRUE)) %>%
+  mutate(
+    spike_freq_lower = pmax(spike_freq_mean - spike_freq_sd, 1e-7), #adding a minimal value to avoid negative values generating NAs when log transformation is done
+    spike_freq_upper = spike_freq_mean + spike_freq_sd,
+    genomic_freq_lower = pmax(genomic_freq_mean - genomic_freq_sd, 1e-7), #adding a minimal value to avoid negative values generating NAs when log transformation is done
+    genomic_freq_upper = genomic_freq_mean + genomic_freq_sd
+  )
+
+
+(p <- plotable %>%
+    ggplot() +
+    geom_line(aes(x=tail_len,
+                  y=log10(spike_freq_mean)),
+              alpha=.5) +
+    geom_point(aes(x=tail_len,
+                   y=log10(spike_freq_mean)),
+               alpha=.5) +
+     geom_errorbar(aes(x = tail_len, 
+                      ymin = log10(spike_freq_lower), 
+                      ymax = log10(spike_freq_upper)), 
+                  width = 0.2, color = "#908f8f") +
+    geom_line(aes(x=tail_len,
+                  y=log10(genomic_freq_mean)),
+              color = "#b71c20") +
+    geom_point(aes(x=tail_len,
+                   y=log10(genomic_freq_mean)),
+               color = "#b71c20") +
+    geom_errorbar(aes(x = tail_len, 
+                      ymin = log10(genomic_freq_lower), 
+                      ymax = log10(genomic_freq_upper)), 
+                  width = 0.2, color = "#b71c20") +
+    scale_x_continuous(limits=c(0.5,10.5), breaks=1:10) +
+    ylab('log10(freq Tn), spike=translucent vs genomic=opaque') +
+    theme_bw() +
+    theme(panel.grid.minor = element_blank()))
+
+pdf('Plots/20240708_spikes_with_error_bar.pdf',width=6, height=6)
+p
+dev.off()
+
+values_tail1_spike = unlist(as.vector(intermediary[intermediary$tail_len==1,c("spike_freq")]))
+values_tail1_genome = unlist(as.vector(intermediary[intermediary$tail_len==1,c("genomic_freq")]))
+
+t.test(values_tail1_spike, values_tail1_genome, paired = TRUE, alternative = "two.sided")     #p-value=1.916e-09
+
+values_tail2_spike = unlist(as.vector(intermediary[intermediary$tail_len==2,c("spike_freq")]))
+values_tail2_genome = unlist(as.vector(intermediary[intermediary$tail_len==2,c("genomic_freq")]))
+
+t.test(values_tail2_spike, values_tail2_genome, paired = TRUE, alternative = "two.sided")     #p-value=0.0001226
+
+values_tail3_spike = unlist(as.vector(intermediary[intermediary$tail_len==3,c("spike_freq")]))
+values_tail3_genome = unlist(as.vector(intermediary[intermediary$tail_len==3,c("genomic_freq")]))
+
+t.test(values_tail3_spike, values_tail3_genome, paired = TRUE, alternative = "two.sided")     #p-value=9.615e-06
+
+values_tail4_spike = unlist(as.vector(intermediary[intermediary$tail_len==4,c("spike_freq")]))
+values_tail4_genome = unlist(as.vector(intermediary[intermediary$tail_len==4,c("genomic_freq")]))
+
+t.test(values_tail4_spike, values_tail4_genome, paired = TRUE, alternative = "two.sided")     #p-value=6.517e-06
+
+values_tail5_spike = unlist(as.vector(intermediary[intermediary$tail_len==5,c("spike_freq")]))
+values_tail5_genome = unlist(as.vector(intermediary[intermediary$tail_len==5,c("genomic_freq")]))
+
+t.test(values_tail5_spike, values_tail5_genome, paired = TRUE, alternative = "two.sided")     #p-value=9.215e-06
+
+values_tail6_spike = unlist(as.vector(intermediary[intermediary$tail_len==6,c("spike_freq")]))
+values_tail6_genome = unlist(as.vector(intermediary[intermediary$tail_len==6,c("genomic_freq")]))
+
+t.test(values_tail6_spike, values_tail6_genome, paired = TRUE, alternative = "two.sided")     #p-value=1.31e-05
+
+values_tail7_spike = unlist(as.vector(intermediary[intermediary$tail_len==7,c("spike_freq")]))
+values_tail7_genome = unlist(as.vector(intermediary[intermediary$tail_len==7,c("genomic_freq")]))
+
+t.test(values_tail7_spike, values_tail7_genome, paired = TRUE, alternative = "two.sided")     #p-value=2.376e-05
+
+values_tail8_spike = unlist(as.vector(intermediary[intermediary$tail_len==8,c("spike_freq")]))
+values_tail8_genome = unlist(as.vector(intermediary[intermediary$tail_len==8,c("genomic_freq")]))
+
+t.test(values_tail8_spike, values_tail8_genome, paired = TRUE, alternative = "two.sided")     #p-value=5.807e-05
+
+values_tail9_spike = unlist(as.vector(intermediary[intermediary$tail_len==9,c("spike_freq")]))
+values_tail9_genome = unlist(as.vector(intermediary[intermediary$tail_len==9,c("genomic_freq")]))
+
+t.test(values_tail9_spike, values_tail9_genome, paired = TRUE, alternative = "two.sided")     #p-value=0.0001606
+
+
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
